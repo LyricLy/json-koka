@@ -1,0 +1,146 @@
+effect parse
+  ctl rest() : sslice
+  ctl consume(count : int) : ()
+  ctl error() : a
+
+alias parser<a, e> = () -> <parse|e> a
+
+fun run-parser(input : string, action : parser<a, e>) : e maybe<a>
+  var s := slice(input)
+  with handler
+    fun rest() s
+    fun consume(count)
+      s := s.advance(count)
+      ()
+    ctl error() Nothing
+  Just(action())
+
+fun satisfy(target : (c : char) -> bool) : parse char
+  match rest().next
+    Just((c, _)) -> if target(c) then { consume(1); c } else error()
+    Nothing -> error()
+
+fun startswith(slice : sslice, hope : sslice) : bool
+  match hope.next
+    Just((c, xs)) -> match slice.next
+      Just((o, ys)) -> if c == o then ys.unsafe-decreasing.startswith(xs.unsafe-decreasing) else False
+      Nothing -> False
+    Nothing -> True
+
+fun pure(x : a) : parse a
+  x
+
+fun chunk(target : string) : <div,parse> string
+  if rest().startswith(target.slice) then
+    consume(target.count)
+    target
+  else
+    error()
+
+fun choice(x : parser<a, <parse|e>>, y : parser<a, e>) : <parse|e> a
+  with handler
+    fun rest() rest()
+    fun consume(count) consume(count)
+    ctl error() y()
+  x()
+
+fun optional(x : parser<a, <parse|e>>) : <parse|e> maybe<a>
+  choice { Just(x()) } { pure(Nothing) }
+
+type json
+  Num(i : int)
+  String(s : string)
+  Bool(b : bool)
+  Null
+  List(l : list<json>)
+
+fun ws() : <div,parse> ()
+  match optional({ satisfy(fn(c) c == ' ' || c == '\r' || c == '\n' || c == '\t') })
+    Just(_) -> ws()
+    Nothing -> ()
+
+fun null() : <div,parse> json
+  ws()
+  chunk("null")
+  Null
+
+fun bool() : <div,parse> json
+  ws()
+  val x = choice { chunk("true"); True } { chunk("false"); False }
+  Bool(x)
+
+fun string() : <div,parse> json
+  ws()
+  chunk("\"")
+  var s := ""
+  while { rest().startswith("\"".slice).not }
+    val r = satisfy(fn(c) True).string
+    s := s ++ r
+  consume(1)
+  String(s)
+
+fun num() : <div,parse> json
+  ws()
+  var s := 0
+  var saw := False
+  while { match rest().next() { Just((c, _)) -> c.is-digit; Nothing -> False } }
+    s := s * 10 + int(unsafe-no-exn({ rest().next.unjust }).fst - '0')
+    saw := True
+    consume(1)
+  if not(saw) then error()
+  Num(s)
+
+fun many(a : parser<a, <div,parse|e>>) : <div,parse|e> list<a>
+  choice {
+    Cons(a(), mask<parse> { many(a) })
+  } {
+    Nil
+  }
+
+fun list() : <div,parse> json
+  ws()
+  chunk("[")
+  var l := []
+  optional {
+    l := [expr()]
+    many {
+      ws()
+      chunk(",")
+      l := l ++ [expr()]
+    }
+  }
+  ws()
+  chunk("]")
+  List(l)
+
+fun expr() : <div,parse> json
+  choice {
+    num()
+  } {
+    choice {
+      string()
+    } {
+      choice {
+        bool()
+      } {
+        choice {
+          null()
+        } {
+          list()
+        }
+      }
+    }
+  }
+
+fun json() : <div,parse> json
+  val r = expr()
+  ws()
+  r
+
+fun test()
+  with run-parser("[23, \"string\", true, null]")
+  expr()
+
+fun main()
+  test().unjust
+  ()
